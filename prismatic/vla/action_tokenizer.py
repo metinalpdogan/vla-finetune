@@ -18,6 +18,9 @@ from prismatic.overwatch.overwatch import initialize_overwatch
 
 overwatch = initialize_overwatch(__name__)
 
+# Repo root (`openvla-mini/`) so VQ paths resolve regardless of process cwd.
+_OPENVLA_REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 class ActionTokenizer:
     def __init__(
@@ -191,18 +194,23 @@ ACTION_TOKENIZERS = {
     "extra_action_tokenizer": partial(ActionTokenizer, use_extra=True),
     # libero
     "libero_vq_action_tokenizer": partial(
-        VQActionTokenizer, vq_vae_path="vq/pretrain_vq+mx-libero_90+fach-7+ng-7+nemb-128+nlatent-512"
+        VQActionTokenizer,
+        vq_vae_path=str(_OPENVLA_REPO_ROOT / "vq/pretrain_vq+mx-libero_90+fach-7+ng-7+nemb-128+nlatent-512"),
     ),
     "libero_vq_extra_action_tokenizer": partial(
-        VQActionTokenizer, vq_vae_path="vq/pretrain_vq+mx-libero_90+fach-7+ng-7+nemb-128+nlatent-512", use_extra=True
+        VQActionTokenizer,
+        vq_vae_path=str(_OPENVLA_REPO_ROOT / "vq/pretrain_vq+mx-libero_90+fach-7+ng-7+nemb-128+nlatent-512"),
+        use_extra=True,
     ),
     "libero_vq_h0_extra_action_tokenizer": partial(
-        VQActionTokenizer, vq_vae_path="vq/pretrain_vq+mx-libero_90+fach-0+ng-7+nemb-128+nlatent-512", use_extra=True
+        VQActionTokenizer,
+        vq_vae_path=str(_OPENVLA_REPO_ROOT / "vq/pretrain_vq+mx-libero_90+fach-0+ng-7+nemb-128+nlatent-512"),
+        use_extra=True,
     ),
     # bridge
     "bridge_vq_extra_action_tokenizer": partial(
         VQActionTokenizer,
-        vq_vae_path="vq/pretrain_modvq+mx-bridge_dataset+fach-7+ng-7+nemb-256+nlatent-512",
+        vq_vae_path=str(_OPENVLA_REPO_ROOT / "vq/pretrain_modvq+mx-bridge_dataset+fach-7+ng-7+nemb-256+nlatent-512"),
         use_extra=True,
     ),
 }

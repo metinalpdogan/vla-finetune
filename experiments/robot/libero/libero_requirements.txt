@@ -1,6 +1,7 @@
 imageio[ffmpeg]
-robosuite
-bddl
+# LIBERO expects robosuite 1.4.x APIs (see LIBERO/requirements.txt). Unpinned installs break imports.
+robosuite==1.4.0
+bddl==1.0.1
 easydict
 cloudpickle
 gym

@@ -6,6 +6,7 @@ fine-grained control over wrapping policies and mixed precision per component).
 """
 
 import math
+import os
 from collections import OrderedDict
 from functools import partial
 from pathlib import Path
@@ -83,10 +84,19 @@ class FSDPStrategy(TrainingStrategy):
         )
 
         # FSDP-Specific Parameters
+        # NOTE: Original mapping used HYBRID_* variants which assume multi-node setups (shard intra-node,
+        # replicate inter-node). On a single node with N GPUs that produces a degenerate inter-node group
+        # of size 1 and can crash during FSDP init. For single-node runs we want plain FULL_SHARD /
+        # SHARD_GRAD_OP. We pick based on world topology: hybrid only when there are >1 nodes.
+        is_multinode = dist.is_initialized() and (int(os.environ.get("WORLD_SIZE", "1")) > int(os.environ.get("LOCAL_WORLD_SIZE", "1")))
         if sharding_strategy == "shard-grad-op":
-            self.fsdp_sharding_strategy = ShardingStrategy._HYBRID_SHARD_ZERO2
+            self.fsdp_sharding_strategy = (
+                ShardingStrategy._HYBRID_SHARD_ZERO2 if is_multinode else ShardingStrategy.SHARD_GRAD_OP
+            )
         elif sharding_strategy == "full-shard":
-            self.fsdp_sharding_strategy = ShardingStrategy.HYBRID_SHARD
+            self.fsdp_sharding_strategy = (
+                ShardingStrategy.HYBRID_SHARD if is_multinode else ShardingStrategy.FULL_SHARD
+            )
         else:
             raise ValueError(f"FSDP Sharding Strategy {sharding_strategy} is not supported!")
 

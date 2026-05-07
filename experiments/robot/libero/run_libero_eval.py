@@ -19,6 +19,7 @@ Usage:
 
 import os
 import sys
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
@@ -63,6 +64,7 @@ class GenerateConfig:
     pretrained_checkpoint: Union[str, Path] = ""     # Pretrained checkpoint path
     load_in_8bit: bool = False                       # (For OpenVLA only) Load with 8-bit quantization
     load_in_4bit: bool = False                       # (For OpenVLA only) Load with 4-bit quantization
+    unnorm_key_override: Optional[str] = None        # Override action un-normalization key (advanced/debug)
 
     center_crop: bool = True                         # Center crop? (if trained w/ random crop image aug)
     obs_history: int = 1                             # Number of images to pass in from history
@@ -95,6 +97,9 @@ class GenerateConfig:
 @draccus.wrap()
 def eval_libero(cfg: GenerateConfig) -> None:
     assert cfg.pretrained_checkpoint is not None, "cfg.pretrained_checkpoint must not be None!"
+    startup_warnings: list[str] = []
+    exc_bucket_counts: dict[str, int] = {}
+    exc_bucket_logged: set[str] = set()
     if "image_aug" in cfg.pretrained_checkpoint:
         assert cfg.center_crop, "Expecting `center_crop==True` because model was trained with image augmentations!"
     assert not (cfg.load_in_8bit and cfg.load_in_4bit), "Cannot use both 8-bit and 4-bit quantization!"
@@ -102,8 +107,10 @@ def eval_libero(cfg: GenerateConfig) -> None:
     # Set random seed
     set_seed_everywhere(cfg.seed)
 
-    # [OpenVLA] Set action un-normalization key
-    cfg.unnorm_key = cfg.task_suite_name
+    # [OpenVLA] Set action un-normalization key (used to de-normalize actions for env execution)
+    # Default: match task suite name (e.g., "libero_spatial"). Allow override for checkpoints that only ship
+    # specific norm stats (e.g., a libero_90 checkpoint evaluated on libero_spatial).
+    cfg.unnorm_key = cfg.unnorm_key_override or cfg.task_suite_name
 
     # Load model
     model = get_model(cfg)
@@ -114,7 +121,30 @@ def eval_libero(cfg: GenerateConfig) -> None:
         # with the suffix "_no_noops" in the dataset name)
         if cfg.unnorm_key not in model.norm_stats and f"{cfg.unnorm_key}_no_noops" in model.norm_stats:
             cfg.unnorm_key = f"{cfg.unnorm_key}_no_noops"
-        assert cfg.unnorm_key in model.norm_stats, f"Action un-norm key {cfg.unnorm_key} not found in VLA `norm_stats`!"
+        if cfg.unnorm_key not in model.norm_stats:
+            # Common case: pretrained on `libero_90` checkpoint evaluated on libero_* spatial/object/goal/etc.
+            # Stats for that mixture still live under key `libero_90`; override explicitly if undesired.
+            if (
+                cfg.unnorm_key_override is None
+                and cfg.task_suite_name.startswith("libero_")
+                and "libero_90" in model.norm_stats
+            ):
+                warned = (
+                    f"[WARN] Action un-norm key `{cfg.unnorm_key}` missing; using available `libero_90` stats instead "
+                    f"(checkpoint only has keys {sorted(model.norm_stats.keys())}). "
+                    f"Set `--unnorm_key_override ...` to force a different key."
+                )
+                startup_warnings.append(warned)
+                cfg.unnorm_key = "libero_90"
+            else:
+                available = sorted(model.norm_stats.keys())
+                raise AssertionError(
+                    f"Action un-norm key {cfg.unnorm_key} not found in VLA `norm_stats`! "
+                    f"Try --unnorm_key_override <key>. Available keys: {available}"
+                )
+
+    for warning in startup_warnings:
+        print(warning)
 
     # [OpenVLA] Get Hugging Face processor
     processor = None
@@ -142,11 +172,57 @@ def eval_libero(cfg: GenerateConfig) -> None:
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite = benchmark_dict[cfg.task_suite_name]()
     num_tasks_in_suite = task_suite.n_tasks
+
+    pretrained_resolved_path = Path(cfg.pretrained_checkpoint).expanduser().resolve()
+    resize_size = get_image_resize_size(cfg)
+
+    def _suite_max_env_steps(task_suite_name: str) -> int:
+        """Max control steps (+ wait) handled in the eval loop per task suite."""
+        if task_suite_name == "libero_spatial":
+            return 220
+        elif task_suite_name == "libero_object":
+            return 280
+        elif task_suite_name == "libero_goal":
+            return 300
+        elif task_suite_name == "libero_10":
+            return 520
+        elif task_suite_name == "libero_90":
+            return 400
+        return -1
+
+    max_env_steps = _suite_max_env_steps(cfg.task_suite_name)
+    available_norm_keys_msg = ""
+    if cfg.model_family in ["openvla", "prismatic"]:
+        available_norm_keys_msg = ", ".join(sorted(model.norm_stats.keys()))
+
+    if cfg.load_in_8bit or cfg.load_in_4bit:
+        quant_line = f"# Quantization: load_in_8bit={cfg.load_in_8bit}, load_in_4bit={cfg.load_in_4bit}"
+    else:
+        quant_line = "# Quantization: disabled (full precision load)"
+
+    eval_header = "\n".join(
+        [
+            "# OpenVLA / Prismatic :: LIBERO evaluation run",
+            *(f"# {w.removeprefix('[WARN] ').strip()}" if w.startswith("[WARN]") else f"# {w}" for w in startup_warnings),
+            f"# Checkpoint (pretrained_checkpoint): {pretrained_resolved_path}",
+            f"# Model family: {cfg.model_family}",
+            f"# Task suite: {cfg.task_suite_name} (#tasks = {num_tasks_in_suite})",
+            f"# Rollouts per task (num_trials_per_task): {cfg.num_trials_per_task}",
+            f"# Simulator wait steps before policy acts (num_steps_wait): {cfg.num_steps_wait}",
+            f"# Per-episode horizon used in loop (max_env_steps): {max_env_steps}",
+            f"# Image preprocessing: resize_size={resize_size}, center_crop={cfg.center_crop}, obs_history={cfg.obs_history}, use_wrist_image={cfg.use_wrist_image}",
+            f"# Action un-normalization key (effective): {cfg.unnorm_key}" + (" (loaded into model.norm_stats)" if cfg.model_family in ["openvla", "prismatic"] else ""),
+            f"# norm_stats keys available in checkpoint: [{available_norm_keys_msg}]",
+            quant_line,
+            f"# Misc: seed={cfg.seed}, run_id_note={cfg.run_id_note}",
+            "",
+        ]
+    )
+    print(eval_header, end="")
+    log_file.write(eval_header)
+
     print(f"Task suite: {cfg.task_suite_name}")
     log_file.write(f"Task suite: {cfg.task_suite_name}\n")
-
-    # Get expected image dimensions
-    resize_size = get_image_resize_size(cfg)
 
     # Start evaluation
     total_episodes, total_successes = 0, 0
@@ -259,8 +335,21 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     t += 1
 
                 except Exception as e:
-                    print(f"Caught exception: {e}")
-                    log_file.write(f"Caught exception: {e}\n")
+                    tb = traceback.format_exc()
+                    bucket = f"{type(e).__module__}.{type(e).__name__}: {e!r}"
+                    exc_bucket_counts[bucket] = exc_bucket_counts.get(bucket, 0) + 1
+                    # Print full detail on first occurrence per bucket; afterwards only count (logs stay readable).
+                    if bucket not in exc_bucket_logged:
+                        exc_bucket_logged.add(bucket)
+                        detail = (
+                            f"Caught exception [{bucket}] (showing full traceback once per unique error):\n{tb}\n"
+                        )
+                        print(detail, end="")
+                        log_file.write(detail)
+                    else:
+                        short = f"Caught exception [{bucket}] (repeat #{exc_bucket_counts[bucket]})\n"
+                        print(short, end="")
+                        log_file.write(short)
                     break
 
             task_episodes += 1

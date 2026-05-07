@@ -110,7 +110,7 @@ class LLaVa_LVIS4V_LRV_Config(DatasetConfig):
         Path("download/llava-v1.5-instruct/llava_v1_5_lvis4v_lrv_mix1231k.json"),
         Path("download/llava-v1.5-instruct/"),
     )
-    dataset_root_dir: Path = Path(os.environ["PRISMATIC_DATA_ROOT"])
+    dataset_root_dir: Path = Path(os.environ.get("PRISMATIC_DATA_ROOT", DEFAULT_DATA_ROOT))
 
 
 # === Define a Dataset Registry Enum for Reference & Validation =>> all *new* datasets must be added here! ===

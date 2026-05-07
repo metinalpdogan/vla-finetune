@@ -131,7 +131,20 @@ def train(cfg: TrainConfig) -> None:
 
     # Start =>> Build Directories and Set Randomness
     overwatch.info('"Do or do not; there is no try."', ctx_level=1)
-    hf_token = cfg.hf_token.read_text().strip() if isinstance(cfg.hf_token, Path) else os.environ[cfg.hf_token]
+    # `hf_token` may be provided either as:
+    # - a path to a token file (recommended; single-line text file), OR
+    # - an environment variable name that contains the token.
+    #
+    # In some draccus/YAML setups, `Union[str, Path]` may deserialize into a `str` even when the value looks like a path
+    # (e.g. ".hf_token"). Handle that case by checking for file existence.
+    if isinstance(cfg.hf_token, Path):
+        hf_token = cfg.hf_token.read_text().strip()
+    else:
+        hf_token_path = Path(cfg.hf_token)
+        if hf_token_path.exists():
+            hf_token = hf_token_path.read_text().strip()
+        else:
+            hf_token = os.environ[cfg.hf_token]
     worker_init_fn = set_global_seed(cfg.seed, get_worker_init_fn=True)
     os.makedirs(run_dir := (cfg.run_root_dir / cfg.run_id), exist_ok=True)
     os.makedirs(cfg.run_root_dir / cfg.run_id / "checkpoints", exist_ok=True)

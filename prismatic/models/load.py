@@ -211,7 +211,10 @@ def load_vla(
     )
 
     if image_sequence_len is None:
-        if hasattr(model_cfg, "image_sequence_len"):
+        # Prefer VLA run config (e.g. T=2 image history) over base VLM defaults.
+        if vla_cfg.get("image_sequence_len") is not None:
+            image_sequence_len = int(vla_cfg["image_sequence_len"])
+        elif hasattr(model_cfg, "image_sequence_len"):
             image_sequence_len = model_cfg.image_sequence_len
         else:
             image_sequence_len = 1

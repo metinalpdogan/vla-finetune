@@ -254,9 +254,22 @@ def get_prismatic_vla_action(vla, processor, base_vla_name, obs, task_label, unn
 
         processed_images.append(image)
 
-    # extract for single image
-    if len(processed_images) == 1:
-        processed_images = processed_images[0]
+    # Multi-frame models (image_sequence_len > 1) require a *list* of PIL images of exactly that length.
+    # Do NOT collapse to a single PIL Image, otherwise `WrapSequenceImageTransform` asserts in vision preprocessing.
+    seq_len = getattr(getattr(vla, "vision_backbone", None), "image_sequence_len", 1)
+    if seq_len > 1:
+        if len(processed_images) == 1:
+            processed_images = processed_images * seq_len
+        elif len(processed_images) != seq_len:
+            raise ValueError(
+                f"Expected `obs['full_image']` to contribute {seq_len} frames after preprocessing, "
+                f"but got {len(processed_images)} images. "
+                f"Set `--obs_history {seq_len}` in `run_libero_eval.py` (and/or provide enough frames)."
+            )
+    else:
+        # Single-frame models accept one PIL Image
+        if len(processed_images) == 1:
+            processed_images = processed_images[0]
 
     action = vla.predict_action(processed_images, task_label, unnorm_key=unnorm_key, **kwargs)
     return action
