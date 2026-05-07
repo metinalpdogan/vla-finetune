@@ -1,5 +1,10 @@
 # OpenVLA: An Open-Source Vision-Language-Action Model
 
+**ALP: MiniVLA**
+
+Where to download the base checkpoint (HuggingFace history 2 libero 90).
+How to obtain the LIBERO RLDS data (/home/metinalp/miniconda3/projects/VLLM/modified_libero_rlds, 20 GB — you will need to either get it from the LIBERO project or regenerate it via regenerate_libero_dataset.py).
+
 **Note: For MiniVLA, see the links in Latest Updates below!**
 
 [![arXiv](https://img.shields.io/badge/arXiv-2406.09246-df2a2a.svg?style=for-the-badge)](https://arxiv.org/abs/2406.09246)
