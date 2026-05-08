@@ -154,8 +154,10 @@ wandb/
 
 # Training artifacts: large checkpoints/runs that should NOT be in version control.
 # Your friend will produce their own; the base model is downloaded from HF, not committed.
-runs/
-checkpoints/
+# NOTE: leading slash anchors these to the repo root, so we don't accidentally exclude
+# small per-component "checkpoints/" subfolders (e.g. vq/.../checkpoints/model.pt).
+/runs/
+/checkpoints/
 
 # Eval log outputs (auto-generated, can grow large)
 experiments/logs/
