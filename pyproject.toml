@@ -54,6 +54,9 @@ dependencies = [
     "tensorflow_graphics==2021.12.3",
     "dlimp @ git+https://github.com/moojink/dlimp_openvla",
     "flash-attn==2.5.5",
+    "scipy>=1.10",
+    "opencv-python>=4.5",
+    "pyrealsense2>=2.55",
 ]
 
 [project.optional-dependencies]

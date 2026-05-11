@@ -45,6 +45,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple
 
+# Prepend the vendored xArm SDK at ril-env/xarm/ to sys.path so `from xarm.wrapper import XArmAPI`
+# resolves to the in-repo copy (matches what data_collection/collect_demos.py does). This avoids
+# requiring `pip install xarm-python-sdk`, which would shadow the vendored copy.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_RIL_ENV_DIR = _REPO_ROOT / "ril-env"
+if _RIL_ENV_DIR.exists() and str(_RIL_ENV_DIR) not in sys.path:
+    sys.path.insert(0, str(_RIL_ENV_DIR))
+
 import cv2
 import numpy as np
 import torch
@@ -56,11 +64,15 @@ from prismatic.models import load_vla
 from prismatic.util.data_utils import PaddedCollatorForActionPrediction
 from prismatic.vla.action_tokenizer import ActionTokenizer
 
-# Robot control imports
+# Robot control imports — uses the vendored SDK at ril-env/xarm/ (see sys.path insert above)
 try:
     from xarm.wrapper import XArmAPI
 except ImportError:
-    raise SystemExit("xArm SDK not found. Install: pip install xarm-python-sdk")
+    raise SystemExit(
+        f"xArm SDK not found. Expected vendored copy at {_RIL_ENV_DIR}/xarm/. "
+        "If the ril-env/ directory is missing, run `bash setup_inference.sh` "
+        "or `pip install xarm-python-sdk` as a fallback."
+    )
 
 
 # === Logging Setup ===
