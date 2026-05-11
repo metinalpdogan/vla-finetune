@@ -10,6 +10,8 @@ What's in this repo:
 
 For real-robot data collection, see **[`data_collection/README.md`](./data_collection/README.md)**.
 
+For the previous upstream-style README (deeper coverage of LIBERO eval, BridgeData V2 setup, full-finetune via FSDP, etc.), see [`README_legacy.md`](./README_legacy.md).
+
 ---
 
 ## Table of contents
