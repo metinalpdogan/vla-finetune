@@ -53,7 +53,17 @@ dependencies = [
     "tensorflow_datasets==4.9.3",
     "tensorflow_graphics==2021.12.3",
     "dlimp @ git+https://github.com/moojink/dlimp_openvla",
-    "flash-attn==2.5.5",
+    # flash-attn build prerequisites kept in the env so a follow-up
+    # `uv pip install flash-attn==2.5.5 --no-build-isolation` can find them.
+    # flash-attn itself is NOT in this list because uv's resolver tries to
+    # build it for metadata extraction during `uv sync`, and that fails
+    # before the build prereqs are in place. Install it post-sync, see
+    # bottom of pyproject.toml + setup_inference.sh.
+    "setuptools",
+    "wheel",
+    "ninja",
+    "packaging",
+    "psutil",
     "scipy>=1.10",
     "opencv-python>=4.5",
     "pyrealsense2>=2.55",
@@ -71,6 +81,12 @@ sagemaker = [
     "boto3",
     "sagemaker"
 ]
+
+# Note on flash-attn (v2.5.5): not a regular dep because uv tries to build it
+# for metadata during `uv sync`, which fails before torch/setuptools are
+# installed. Install it AFTER `uv sync` completes:
+#
+#   CC=/usr/bin/gcc uv pip install "flash-attn==2.5.5" --no-build-isolation
 
 [project.urls]
 homepage = "https://github.com/openvla/openvla"

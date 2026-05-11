@@ -99,7 +99,12 @@ class XArmInferenceConfig:
     # Camera configuration
     agent_cam_id: int = 0                        # Agent view camera ID (USB cam index or RS serial)
     wrist_cam_id: int = 2                        # Wrist view camera ID
-    image_size: int = 224                        # Model input image size (224px for MiniVLA)
+    image_size: int = 224                        # Match training-time `resize_resolution` (the
+                                                  # vision backbone's default_image_resolution).
+                                                  # CameraManager does stretch-resize 1280x720 -> 224
+                                                  # then center-crops 0.9 area, mirroring the training
+                                                  # RLDS pipeline (resize_resolution=(224,224) +
+                                                  # random_resized_crop(scale=[0.9,0.9])).
     use_realsense: bool = True                   # Use RealSense; False = USB cameras
 
     # Task configuration
@@ -121,10 +126,32 @@ class XArmInferenceConfig:
     max_action_norm: float = 0.15                # Clip action magnitude for safety (m/rad)
     enable_collision_check: bool = True          # Enable xArm collision detection
 
+    # Warm-up / "kickstart" override (band-aid for the closed-loop noop
+    # attractor — model predicts noop on start-of-demo-looking scenes, arm
+    # never moves, scene never changes). For the first `warmup_steps` ticks,
+    # override the predicted xyz/rpy with a fixed downward motion of magnitude
+    # `warmup_dz` per step. The model's grasp prediction is kept (so we don't
+    # accidentally fight a CLOSED command). After warmup, control reverts to
+    # the model. If after warmup the model still predicts noop, the issue is
+    # the trained model itself — re-collect/re-train. If it starts predicting
+    # real actions, the model is fine and the production fix is to retrain
+    # with leading paused frames trimmed (already wired into stage 2).
+    warmup_steps: int = 0                        # 0 disables; ~10 is a sane test value
+    warmup_dz: float = -0.005                    # per-step delta in meters (negative = down)
+
     def __post_init__(self):
         if self.home_joints is None:
-            # Default home position for xArm7 (adjust as needed)
-            self.home_joints = [0, 0, 0, 70, 0, 70, 0]  # degrees
+            # Median joint config the operator manually positioned the arm to
+            # at the start of every successful pick_red_block demo (computed
+            # from the 62-episode replay buffer: median of JointAngles[:5]
+            # across all demos). Homing here means the agentview at step 0
+            # of the rollout matches what the model saw at frame 0 of every
+            # training demo (gripper pointing down, ~47 cm forward, ~23 cm
+            # up, visible in the agent camera frame). The vanilla ril-env
+            # default [0, 0, 0, 70, 0, 70, 0] parks the arm slightly higher
+            # / further back and out of the model's training distribution,
+            # which makes it stuck in a noop loop on rollout start.
+            self.home_joints = [-1.4, 0.0, -1.3, 67.4, 2.1, 65.9, -3.7]
         if self.video_path is None and self.save_video:
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             self.video_path = Path(f"rollouts/xarm_inference_{timestamp}.mp4")
@@ -147,7 +174,20 @@ class CameraManager:
             self._init_usb_cameras()
 
     def _init_realsense(self):
-        """Initialize RealSense cameras."""
+        """Initialize RealSense cameras to match the collection-time pipeline EXACTLY.
+
+        Training-time pipeline (data_collection/collect_demos.py):
+            - capture resolution 1280x720 @ 30 fps
+            - exposure = 120, gain = 0   (manual; not auto)
+            - white_balance = 5900 K     (manual; produces the warm/peach tint)
+            - frames recorded to MP4, then stage-2 cv2.resize(1280x720 -> 256x256)
+              which *stretches* 16:9 into 1:1 (no crop)
+
+        If we capture at a different resolution, set auto exposure, or
+        center-crop the frame, the deployment-time pixel distribution is
+        different enough that the model falls back to predicting the median
+        action bin (i.e. zero motion). We saw this firsthand on this rig.
+        """
         try:
             import pyrealsense2 as rs
         except ImportError:
@@ -156,23 +196,38 @@ class CameraManager:
         self.agent_pipeline = rs.pipeline()
         self.wrist_pipeline = rs.pipeline()
 
+        # MUST match collect_demos.py's RECORD_RES (1280x720) and fps (30)
         config_agent = rs.config()
         config_agent.enable_device(str(self.agent_cam_id))
-        config_agent.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+        config_agent.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
 
         config_wrist = rs.config()
         config_wrist.enable_device(str(self.wrist_cam_id))
-        config_wrist.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+        config_wrist.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
 
-        self.agent_pipeline.start(config_agent)
-        self.wrist_pipeline.start(config_wrist)
+        agent_profile = self.agent_pipeline.start(config_agent)
+        wrist_profile = self.wrist_pipeline.start(config_wrist)
 
-        # Warm up cameras
+        # Apply the same exposure / white-balance overrides as collection.
+        # Without these, RealSense auto-WB produces a cyan tint instead of
+        # the warm 5900K tint the model trained on.
+        for profile in (agent_profile, wrist_profile):
+            sensor = profile.get_device().query_sensors()[1]  # color sensor
+            sensor.set_option(rs.option.enable_auto_exposure, 0)
+            sensor.set_option(rs.option.exposure, 120)
+            sensor.set_option(rs.option.gain, 0)
+            sensor.set_option(rs.option.enable_auto_white_balance, 0)
+            sensor.set_option(rs.option.white_balance, 5900)
+
+        # Warm up cameras (settings need a moment to take effect)
         for _ in range(30):
             self.agent_pipeline.wait_for_frames()
             self.wrist_pipeline.wait_for_frames()
 
-        logger.info(f"RealSense cameras initialized: agent={self.agent_cam_id}, wrist={self.wrist_cam_id}")
+        logger.info(
+            f"RealSense cameras initialized: agent={self.agent_cam_id}, wrist={self.wrist_cam_id} "
+            f"(1280x720 @ 30 fps, exposure=120, wb=5900K — matches collect_demos.py)"
+        )
 
     def _init_usb_cameras(self):
         """Initialize USB cameras."""
@@ -219,12 +274,42 @@ class CameraManager:
             if not ret1 or not ret2:
                 raise RuntimeError("Failed to capture from USB cameras")
 
-        # Convert BGR to RGB and resize
+        # Convert BGR -> RGB
         agent_rgb = cv2.cvtColor(agent_img, cv2.COLOR_BGR2RGB)
         wrist_rgb = cv2.cvtColor(wrist_img, cv2.COLOR_BGR2RGB)
 
-        agent_resized = cv2.resize(agent_rgb, (self.image_size, self.image_size))
-        wrist_resized = cv2.resize(wrist_rgb, (self.image_size, self.image_size))
+        # === Training pipeline replication (CRITICAL) ===
+        # 1. Stage 2 converter: cv2.resize(1280x720 -> 256x256), stretches 16:9.
+        # 2. RLDS dataloader at training time: cv2.resize(256x256 -> 224x224)
+        #    to match the vision backbone's `default_image_resolution`.
+        # 3. image_aug=True applied random_resized_crop(scale=[0.9, 0.9]) to
+        #    every training sample — a ~95%-side / 90%-area square crop placed
+        #    randomly, then resized back to 224x224.
+        # 4. The vision backbone's image_transform then normalizes the 224x224
+        #    PIL image.
+        #
+        # At deployment we should reproduce all of steps 1-3 deterministically,
+        # picking the *center* 90%-area crop (since LIBERO's eval convention).
+        # Skipping step 3 (as the script originally did) means the model is
+        # being shown a strict superset of every training pixel — the framing
+        # is wrong by a few percent — and it collapses to a noop prediction.
+        # See `experiments/robot/openvla_utils.py:crop_and_resize` (the LIBERO
+        # eval helper) and the upstream OpenVLA README's "--center_crop True"
+        # note for context.
+
+        def _stretch_then_center_crop_0p9(img: np.ndarray) -> np.ndarray:
+            # Step 1+2: stretch-resize to 224 (matches training resize_resolution).
+            img224 = cv2.resize(img, (self.image_size, self.image_size), interpolation=cv2.INTER_AREA)
+            # Step 3: 0.9 area => sqrt(0.9) ≈ 0.9487 side. Center-crop, then
+            # resize back to the model's input size.
+            side_frac = np.sqrt(0.9)
+            new_side = int(round(self.image_size * side_frac))
+            off = (self.image_size - new_side) // 2
+            cropped = img224[off : off + new_side, off : off + new_side]
+            return cv2.resize(cropped, (self.image_size, self.image_size), interpolation=cv2.INTER_AREA)
+
+        agent_resized = _stretch_then_center_crop_0p9(agent_rgb)
+        wrist_resized = _stretch_then_center_crop_0p9(wrist_rgb)
 
         return agent_resized, wrist_resized
 
@@ -304,44 +389,45 @@ class XArmRobotController:
 
     def execute_action(self, action: np.ndarray, action_scale: float = 1.0):
         """
-        Execute VLA action on robot.
+        Execute one VLA action on the robot.
 
-        Args:
-            action: (7,) array [dx, dy, dz, droll, dpitch, dyaw, gripper_delta]
-                    dx, dy, dz in meters
-                    droll, dpitch, dyaw in radians
-                    gripper_delta in [-1, 1]
-            action_scale: Scaling factor for actions (safety)
+        The action vector is the *unnormalized* output of MiniVLA after the LIBERO
+        RLDS transform's gripper inversion. Layout (matches training data
+        normalization stats in dataset_statistics.json):
+
+            action[0:3]  delta xyz in meters         (action_scale applies)
+            action[3:6]  delta axis-angle in radians (action_scale applies)
+            action[6]    gripper target in [0, 1]    where 1 = OPEN, 0 = CLOSED
+                          (this is the libero_dataset_transform's inverted
+                           convention; the raw user-side data was {-1=open,
+                           +1=closed} but RLDS clipped to [0,1] then did 1-x,
+                           so the model emits 1.0 for open / 0.0 for closed.)
+
+        Only the 6-D pose component is scaled by action_scale; gripper is a
+        target state, not a delta, so scaling it makes no physical sense.
         """
-        # Scale action
-        action = action * action_scale
-
-        # Extract components
-        delta_pos = action[:3]  # meters
-        delta_rot = action[3:6]  # radians
-        gripper_cmd = action[6]  # -1=open, +1=close
-
-        # Compute target pose
+        # Pose delta (scaled for safety)
+        delta_pos = action[:3] * action_scale
+        delta_rot = action[3:6] * action_scale
         target_pos = self.current_pose[:3] + delta_pos
         target_rot_euler = self.current_pose[3:] + delta_rot
 
-        # Convert to xArm format (mm, degrees)
         target_xarm = np.concatenate([
-            target_pos * 1000.0,  # meters to mm
-            np.rad2deg(target_rot_euler)  # rad to deg
+            target_pos * 1000.0,            # m -> mm
+            np.rad2deg(target_rot_euler),    # rad -> deg
         ])
-
-        # Send servo command
         code = self.arm.set_servo_cartesian(target_xarm.tolist(), speed=100, mvacc=2000)
         if code != 0:
             logger.warning(f"Servo command failed: code {code}")
 
-        # Execute gripper command
-        target_gripper = np.clip(self.current_gripper + gripper_cmd * 0.1, 0.0, 1.0)
-        gripper_pos = int((1.0 - target_gripper) * 850)  # 0-850 range
+        # Gripper: model emits target state in [0, 1] (1=open, 0=closed).
+        # xArm parallel gripper: position 0 = closed, 850 = open. So map open
+        # probability directly: pos = round(open_prob * 850). Threshold to
+        # discrete {open, closed} to avoid jittery half-closed commands.
+        open_prob = float(np.clip(action[6], 0.0, 1.0))
+        gripper_pos = 850 if open_prob > 0.5 else 0
         self.arm.set_gripper_position(gripper_pos, wait=False, speed=5000)
 
-        # Update state
         self.update_state()
 
     def emergency_stop(self):
@@ -360,68 +446,66 @@ class XArmRobotController:
 
 # === VLA Model Wrapper ===
 class VLAModel:
-    """Wrapper for VLA model inference."""
+    """Wrapper around the Prismatic-format MiniVLA for closed-loop inference.
 
-    def __init__(self, checkpoint_path: Path, base_vlm: str, unnorm_key: str,
+    Notes:
+      - Uses prismatic.models.load_vla. That function expects the checkpoint path to be
+        `<RUN_DIR>/checkpoints/<file>.pt` with sibling `config.json` and
+        `dataset_statistics.json`. Don't pass a bare .pt sitting at the repo root.
+      - Norm stats are loaded by load_vla from dataset_statistics.json and attached to
+        the returned OpenVLA model; this class doesn't manage them separately.
+      - `predict_action(image=..., instruction=..., unnorm_key=...)` is the Prismatic
+        OpenVLA API. It handles tokenization + image transform + generation + action
+        de-normalization internally. We just hand it PIL images and a string.
+    """
+
+    def __init__(self, checkpoint_path: Path, unnorm_key: str,
                  device: str = "cuda:0", torch_dtype: torch.dtype = torch.bfloat16):
         self.device = torch.device(device)
         self.torch_dtype = torch_dtype
         self.unnorm_key = unnorm_key
 
-        logger.info(f"Loading VLA model from {checkpoint_path}...")
+        # Sanity-check the run-dir layout before load_vla asserts on it (its message
+        # is cryptic).
+        ckpt = Path(checkpoint_path)
+        if not (ckpt.suffix == ".pt" and ckpt.parent.name == "checkpoints"):
+            raise RuntimeError(
+                f"Checkpoint must live at <RUN_DIR>/checkpoints/<file>.pt. "
+                f"Got {ckpt}. Move the .pt into a checkpoints/ subdir of the run dir "
+                f"that also contains config.json and dataset_statistics.json."
+            )
+        run_dir = ckpt.parents[1]
+        for f in ("config.json", "dataset_statistics.json"):
+            if not (run_dir / f).exists():
+                raise RuntimeError(f"Missing {run_dir / f}; required by prismatic.models.load_vla.")
 
-        # Load checkpoint
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
-
-        # Extract norm stats
-        if "norm_stats" in checkpoint:
-            self.norm_stats = checkpoint["norm_stats"]
-        else:
-            raise ValueError("Checkpoint missing norm_stats. Ensure checkpoint is from training.")
-
-        # Load VLA model
-        self.vla = load_vla(
-            base_vlm=base_vlm,
-            checkpoint=checkpoint_path,
-            device=self.device
-        )
-        self.vla.eval()
-
-        # Get processor (for image + text preprocessing)
-        self.processor = self.vla.get_processor()
-
-        logger.info(f"VLA model loaded on {device}")
+        logger.info(f"Loading VLA from {checkpoint_path} (run_dir={run_dir})")
+        self.vla = load_vla(str(checkpoint_path))
+        self.vla = self.vla.to(self.device).eval()
+        logger.info(f"VLA model ready on {device}")
 
     def predict_action(self, agent_image: np.ndarray, wrist_image: np.ndarray,
-                      instruction: str) -> np.ndarray:
+                       instruction: str) -> np.ndarray:
         """
-        Predict action from observations.
+        Predict an action from a (agentview, wrist) image pair + instruction.
 
         Args:
-            agent_image: (224, 224, 3) RGB uint8
-            wrist_image: (224, 224, 3) RGB uint8
-            instruction: Language instruction string
+            agent_image: (H, W, 3) RGB uint8 — primary / agentview camera.
+            wrist_image: (H, W, 3) RGB uint8 — eye-in-hand camera.
+            instruction: language instruction string (e.g. "pick up the red block").
 
         Returns:
-            action: (7,) float32 array [dx, dy, dz, droll, dpitch, dyaw, gripper]
+            action: (7,) float32 — [dx_m, dy_m, dz_m, drx_rad, dry_rad, drz_rad, grasp].
+                    Already denormalized via the model's stored Q01/Q99 stats for
+                    `unnorm_key` (no further post-processing needed).
         """
-        # Prepare prompt
-        prompt = f"In: What action should the robot take to {instruction.lower()}?\nOut:"
-
-        # Stack images (agent, wrist order matches training)
-        # For multi-image: concatenate along batch dimension, then model processes
+        # Order must match training: agentview first, then wrist (see the t-2 / wrist
+        # MiniVLA configs in prismatic/conf/vla.py — image_sequence_len=2 with
+        # use_wrist_image=True interleaves [agent, wrist]).
         images = [Image.fromarray(agent_image), Image.fromarray(wrist_image)]
-
-        # Process inputs
-        inputs = self.processor(prompt, images)
-        inputs = {k: v.to(self.device, dtype=self.torch_dtype) if torch.is_tensor(v) else v
-                  for k, v in inputs.items()}
-
-        # Run inference
         with torch.no_grad():
-            action = self.vla.predict_action(**inputs, unnorm_key=self.unnorm_key, do_sample=False)
-
-        return action  # Already denormalized, (7,) numpy array
+            action = self.vla.predict_action(image=images, instruction=instruction, unnorm_key=self.unnorm_key)
+        return action  # (7,) numpy array, denormalized
 
 
 # === Video Recorder ===
@@ -465,7 +549,6 @@ def run_inference(config: XArmInferenceConfig):
     # Load VLA model
     vla_model = VLAModel(
         checkpoint_path=config.checkpoint,
-        base_vlm=config.base_vlm,
         unnorm_key=config.unnorm_key,
         device=config.device,
         torch_dtype=config.torch_dtype
@@ -511,6 +594,18 @@ def run_inference(config: XArmInferenceConfig):
 
             # Predict action
             action = vla_model.predict_action(agent_img, wrist_img, config.instruction)
+            model_xyz = action[:3].copy()  # remember model output for logging during warmup
+
+            # === Warm-up override (band-aid for noop attractor) ===
+            in_warmup = step < config.warmup_steps
+            if in_warmup:
+                # Force a fixed downward delta; keep model's grasp prediction.
+                action[0] = 0.0
+                action[1] = 0.0
+                action[2] = config.warmup_dz
+                action[3] = 0.0
+                action[4] = 0.0
+                action[5] = 0.0
 
             # Clip action magnitude for safety
             action_norm = np.linalg.norm(action[:6])
@@ -526,13 +621,21 @@ def run_inference(config: XArmInferenceConfig):
             if video_recorder:
                 video_recorder.write_frame(agent_img, wrist_img)
 
-            # Logging
-            if step % 10 == 0:
-                logger.info(
-                    f"Step {step}/{config.max_steps}: "
-                    f"action={action[:3].round(3).tolist()} (xyz), "
-                    f"gripper={action[6]:.2f}"
-                )
+            # Logging — show full action precision + the model's underlying
+            # prediction during warmup so we can spot when the model starts
+            # producing real motion of its own.
+            tag = "WARMUP " if in_warmup else "MODEL  "
+            extra = (
+                f"  model_xyz=[{model_xyz[0]:+.4f}, {model_xyz[1]:+.4f}, {model_xyz[2]:+.4f}]"
+                if in_warmup else ""
+            )
+            logger.info(
+                f"Step {step:3d}/{config.max_steps} [{tag}]: "
+                f"xyz=[{action[0]:+.4f}, {action[1]:+.4f}, {action[2]:+.4f}] m  "
+                f"rpy=[{action[3]:+.4f}, {action[4]:+.4f}, {action[5]:+.4f}] rad  "
+                f"grasp={action[6]:.2f} ({'OPEN' if action[6] > 0.5 else 'CLOSED'})"
+                f"{extra}"
+            )
 
             # Maintain control frequency
             elapsed = time.time() - step_start
@@ -605,6 +708,12 @@ def main():
     parser.add_argument("--dry_run", action="store_true",
                        help="Predict actions but don't execute on robot")
 
+    # Warm-up override (band-aid for noop attractor; see XArmInferenceConfig docs)
+    parser.add_argument("--warmup_steps", type=int, default=0,
+                       help="Override model with fixed descent for this many initial steps. 0 disables.")
+    parser.add_argument("--warmup_dz", type=float, default=-0.005,
+                       help="Per-step downward delta in meters during warmup (default -5mm).")
+
     # Video
     parser.add_argument("--save_video", action="store_true", default=True,
                        help="Save rollout video")
@@ -623,6 +732,8 @@ def main():
         wrist_cam_id=args.wrist_cam_id,
         use_realsense=not args.use_usb_cameras,
         instruction=args.instruction,
+        warmup_steps=args.warmup_steps,
+        warmup_dz=args.warmup_dz,
         max_steps=args.max_steps,
         unnorm_key=args.unnorm_key,
         action_scale=args.action_scale,

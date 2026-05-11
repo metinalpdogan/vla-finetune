@@ -153,8 +153,26 @@ def convert_episode(
     # more) as the zero-fill sentinel — those rows would produce a giant
     # bogus delta against the real TCP pose. We trim the contiguous all-zero
     # prefix only; zeros that appear after real data are legitimate noops.
-    is_zero = (abs_action == 0).all(axis=1)
-    n_lead = int(np.argmax(~is_zero)) if not is_zero.all() else len(is_zero)
+    # Trim leading "user paused" frames. Detection: at 30 Hz collection rate,
+    # any frame whose ACTUAL physical TCP motion (consecutive-pose delta) is
+    # below ~0.5 mm xyz and ~0.5 deg rpy is the operator holding the
+    # SpaceMouse still — they haven't started the demo yet. Plus the
+    # accumulator's zero-fill prefix (abs_action == 0). We trim the LONGER
+    # of the two so the model never sees "paused-looking start" frames
+    # during training (which otherwise turn into a closed-loop noop
+    # attractor at deployment: model sees paused scene → predicts noop →
+    # arm stays still → scene stays paused → repeat forever).
+    is_zero_fill = (abs_action == 0).all(axis=1)
+    n_lead_fill = int(np.argmax(~is_zero_fill)) if not is_zero_fill.all() else len(is_zero_fill)
+
+    # Real-motion check: consecutive TCP displacement < threshold => paused.
+    # tcp_pose is in mm + deg, so 0.5 mm and 0.5 deg are reasonable noop bounds.
+    tcp_xyz_diff_mm = np.linalg.norm(np.diff(tcp_pose[:, :3], axis=0), axis=1)   # (T-1,)
+    tcp_rpy_diff_deg = np.linalg.norm(np.diff(tcp_pose[:, 3:6], axis=0), axis=1)
+    is_paused = np.concatenate([[True], (tcp_xyz_diff_mm < 0.5) & (tcp_rpy_diff_deg < 0.5)])
+    n_lead_paused = int(np.argmax(~is_paused)) if not is_paused.all() else len(is_paused)
+
+    n_lead = max(n_lead_fill, n_lead_paused)
     if n_lead > 0:
         tcp_pose = tcp_pose[n_lead:]
         joints = joints[n_lead:]
