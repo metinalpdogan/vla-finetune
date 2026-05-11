@@ -168,3 +168,29 @@ experiments/logs/
 # OS / editor noise
 *.swp
 *.swo
+
+# ── Data-collection outputs (large; never commit) ─────────────────────────
+# Per-task replay buffers, MP4 videos, converted HDF5s, ad-hoc sync checks.
+data_collection/recordings/
+
+# Raw artifact patterns (catch-all in case files appear outside recordings/)
+*.zarr/
+*.mp4
+*.hdf5
+*.h5
+
+# ── External / third-party clones (e.g. rlds_dataset_builder upstream) ───
+# Our customized RLDS builder lives at data_collection/rlds_builder/ and IS
+# tracked. The full upstream clone under external/ is reference-only.
+external/
+
+# ── RLDS / TFDS output trees (large; never commit) ───────────────────────
+# Also covered by the `data/` rule above, but pin them explicitly.
+data/rlds/
+
+# ── Local model checkpoints downloaded for finetuning ─────────────────────
+/checkpoints/
+
+# ── HF / TIMM caches if HF_HOME points inside the repo ───────────────────
+hf_cache/
+.cache/

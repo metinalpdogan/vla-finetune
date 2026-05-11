@@ -209,5 +209,10 @@ OXE_NAMED_MIXTURES: Dict[str, List[Tuple[str, float]]] = {
     "libero_90": [
         ("libero_90", 1.0),
     ],
+
+    # === xArm real-robot datasets collected via ril-env + data_collection/ ===
+    "x_arm_pick_red_block": [
+        ("x_arm_pick_red_block", 1.0),
+    ],
 }
 # fmt: on

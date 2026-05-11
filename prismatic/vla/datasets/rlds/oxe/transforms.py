@@ -920,4 +920,6 @@ OXE_STANDARDIZATION_TRANSFORMS = {
     "libero_goal_no_noops": libero_dataset_transform,
     "libero_10_no_noops": libero_dataset_transform,
     "libero_90": libero_dataset_transform,
+    ### xArm real-robot datasets collected via ril-env + data_collection/
+    "x_arm_pick_red_block": libero_dataset_transform,
 }

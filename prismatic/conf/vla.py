@@ -169,6 +169,31 @@ class Exp_Qwen25_DinoSigLIP_224px_wrist_0_5B_LIBERO_90(Exp_Qwen25_DinoSigLIP_224
     use_wrist_image: bool = True
 
 
+# = [1 GPU, RTX 4090 24 GB] MiniVLA-wrist on xArm pick-red-block (real-robot data) =
+# Single-camera-pair (agentview + wrist) MiniVLA finetune. Clone of the wrist
+# LIBERO-90 config with data_mix retargeted and batch sizes set for a single
+# 24 GB GPU. Bump these if you have more GPUs / more VRAM.
+@dataclass
+class Exp_Qwen25_DinoSigLIP_224px_wrist_0_5B_XArm_PickRedBlock(
+    Exp_Qwen25_DinoSigLIP_224px_wrist_0_5B_LIBERO_90
+):
+    vla_id: str = "prism-qwen25-dinosiglip-224px-wrist+0_5b+mx-xarm-pick-red-block"
+    data_mix: str = "x_arm_pick_red_block"
+
+    expected_world_size: int = 1
+    global_batch_size: int = 8
+    per_device_batch_size: int = 8
+
+    # ~61 demos * ~200 steps/demo = ~12k transitions; with batch 8 that's
+    # ~1500 grad steps per epoch. Keep training short — finetune from a
+    # MiniVLA LIBERO checkpoint, don't train from scratch.
+    epochs: int = 50
+    save_every_n_steps: int = 2000
+
+    shuffle_buffer_size: int = 8000
+    learning_rate: float = 2e-5
+
+
 ## bridge Qwen
 
 
@@ -295,6 +320,11 @@ class VLARegistry(Enum):
     QWEN25_DINOSIGLIP_224PX_0_5B_LIBERO_90 = Exp_Qwen25_DinoSigLIP_224px_0_5B_LIBERO_90
     QWEN25_DINOSIGLIP_224PX_T2_0_5B_LIBERO_90 = Exp_Qwen25_DinoSigLIP_224px_T2_0_5B_LIBERO_90
     QWEN25_DINOSIGLIP_224PX_WRIST_0_5B_LIBERO_90 = Exp_Qwen25_DinoSigLIP_224px_wrist_0_5B_LIBERO_90
+
+    # xArm real-robot finetune target (single 4090)
+    QWEN25_DINOSIGLIP_224PX_WRIST_0_5B_XARM_PICK_RED_BLOCK = (
+        Exp_Qwen25_DinoSigLIP_224px_wrist_0_5B_XArm_PickRedBlock
+    )
 
     QWEN25_DINOSIGLIP_224PX_0_5B_BRIDGE = Exp_Qwen25_DinoSigLIP_224px_0_5B_Bridge
 
