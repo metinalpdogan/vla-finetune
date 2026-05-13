@@ -173,6 +173,10 @@ experiments/logs/
 # Per-task replay buffers, MP4 videos, converted HDF5s, ad-hoc sync checks.
 data_collection/recordings/
 
+# ── phone_data_bridge: local copy of source zarr + stage-A intermediate HDF5
+phone_data_bridge/source/
+phone_data_bridge/recordings/
+
 # Raw artifact patterns (catch-all in case files appear outside recordings/)
 *.zarr/
 *.mp4

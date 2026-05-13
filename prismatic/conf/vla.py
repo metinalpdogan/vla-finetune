@@ -194,6 +194,19 @@ class Exp_Qwen25_DinoSigLIP_224px_wrist_0_5B_XArm_PickRedBlock(
     learning_rate: float = 2e-5
 
 
+# = [1 GPU, RTX 4090 24 GB] MiniVLA-wrist on xArm phone-teleop data =
+# Same architecture / training schedule as the ril-env variant; only the
+# data mixture changes. Collected via phone_data_collection -> converted
+# via phone_data_bridge/zarr_to_libero_hdf5.py -> RLDS via the matching
+# rlds_builder/XArmPhoneTeleop. Useful for comparing teleop modalities.
+@dataclass
+class Exp_Qwen25_DinoSigLIP_224px_wrist_0_5B_XArm_PhoneTeleop(
+    Exp_Qwen25_DinoSigLIP_224px_wrist_0_5B_XArm_PickRedBlock
+):
+    vla_id: str = "prism-qwen25-dinosiglip-224px-wrist+0_5b+mx-xarm-phone-teleop"
+    data_mix: str = "x_arm_phone_teleop"
+
+
 ## bridge Qwen
 
 
@@ -324,6 +337,11 @@ class VLARegistry(Enum):
     # xArm real-robot finetune target (single 4090)
     QWEN25_DINOSIGLIP_224PX_WRIST_0_5B_XARM_PICK_RED_BLOCK = (
         Exp_Qwen25_DinoSigLIP_224px_wrist_0_5B_XArm_PickRedBlock
+    )
+
+    # xArm phone-teleop finetune target (single 4090)
+    QWEN25_DINOSIGLIP_224PX_WRIST_0_5B_XARM_PHONE_TELEOP = (
+        Exp_Qwen25_DinoSigLIP_224px_wrist_0_5B_XArm_PhoneTeleop
     )
 
     QWEN25_DINOSIGLIP_224PX_0_5B_BRIDGE = Exp_Qwen25_DinoSigLIP_224px_0_5B_Bridge

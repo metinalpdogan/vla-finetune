@@ -922,4 +922,6 @@ OXE_STANDARDIZATION_TRANSFORMS = {
     "libero_90": libero_dataset_transform,
     ### xArm real-robot datasets collected via ril-env + data_collection/
     "x_arm_pick_red_block": libero_dataset_transform,
+    ### xArm real-robot datasets collected via phone_data_collection + phone_data_bridge/
+    "x_arm_phone_teleop": libero_dataset_transform,
 }
